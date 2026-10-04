@@ -61,6 +61,10 @@ class LinearTrajectory:
 
         Must be called under ``self.lock``.
         """
+        # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
+        #    first turn rolls back to the empty checkpoint, clearing token_ids.
+        self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
+
         if not self.token_ids:
             return tito_tokenizer.render_messages(
                 request_messages,
@@ -69,8 +73,6 @@ class LinearTrajectory:
                 tokenize=True,
             )
 
-        # 1. Detect agent retries and roll back (at most one assistant step).
-        self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
         # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
         #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
         try:
@@ -203,11 +205,10 @@ class LinearTrajectory:
                 assistant_count += 1
 
         if checkpoint_index < 0:
-            raise MessageValidationError(
-                f"rollback failed: no assistant message found in the first "
-                f"{match_len} matched messages (stored has {len(stored)} messages, "
-                f"request has {len(request_messages)} messages)"
-            )
+            # No assistant in the matched prefix: the agent is retrying the first turn
+            # (e.g. mini-swe-agent drops a malformed reply and re-asks), so roll back to
+            # the empty checkpoint and re-render the prompt from scratch.
+            rollback_msg_end = 0
 
         discard_count = self.num_assistant - (checkpoint_index + 1)
         if discard_count > MAX_ASSISTANT_ROLLBACK_STEPS:

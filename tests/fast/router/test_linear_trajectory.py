@@ -474,6 +474,22 @@ class TestRollback:
         assert session.token_ids == [1, 2, 3, 10, 11]
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1]
 
+    def test_rollback_to_empty_checkpoint_when_first_turn_retried(self, registry: SessionRegistry):
+        """A request that diverges before the first assistant (the agent dropped its first
+        reply and re-asked) rolls back to the empty checkpoint and renders from scratch."""
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        retry_msgs = [SYS_MSG, USER_MSG, {"role": "tool", "content": "format error", "tool_call_id": "call_1"}]
+        result = session.prepare_pretokenized(retry_msgs, tito_tokenizer=registry.tito_tokenizer)
+        assert isinstance(result, list)
+
+        assert session.num_assistant == 0
+        assert session.trajectory_token_ids == []
+        assert session.records == []
+        assert session.messages == []
+
     def test_multi_step_rollback_raises(self, registry: SessionRegistry):
         """Rollback that discards >1 assistant raises MessageValidationError and leaves state unchanged."""
         sid = registry.create_session()
@@ -611,17 +627,6 @@ class TestRollback:
         assert session.num_assistant == 1
         assert len(session.trajectory_token_ids) == 1
         assert session.token_ids == [1, 2, 10]
-
-    def test_rollback_no_assistant_in_prefix_raises(self, registry: SessionRegistry):
-        """Rollback raises if no assistant message exists in the matched prefix."""
-        sid = registry.create_session()
-        session = registry.get_session(sid)
-        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
-
-        # Diverge at user message (index 1) - only sys matched, no assistant
-        bad_msgs = [SYS_MSG, {"role": "user", "content": "different question"}]
-        with pytest.raises(MessageValidationError, match="rollback failed.*no assistant"):
-            session.prepare_pretokenized(bad_msgs, tito_tokenizer=registry.tito_tokenizer)
 
     def test_rollback_records_truncated(self, registry: SessionRegistry):
         """Records are truncated in sync with trajectory_token_ids on rollback."""
